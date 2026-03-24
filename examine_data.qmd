@@ -1,0 +1,342 @@
+---
+title: "[Data cleaning documentation] <PROJECT NAME>"
+author: Your Name
+format: 
+  html:
+    css: documentation.css
+    toc: true
+    toc-location: right
+    number-depth: 3
+    theme: cerulean
+editor: source
+number-sections: true
+---
+
+```{r setup}
+#| label: setup
+#| message: false
+#| warning: false
+
+# load the libraries we will need in this document
+library(tidyverse)
+library(maps)
+```
+
+Provide a high-level description of the project.
+
+## Domain problem formulation
+
+Describe the *original* project goal in more detail. Come back and add to this section if the project direction changes, but keep the content about the original goal for reference.
+
+## Step 1: Review background information {#sec:bg-info}
+
+### Information on data collection
+
+Provide more information about the data, such as specifics about how it was collected and what is being measured.
+
+If there is any metadata that provides background information about the data, describe it here and provide stable links (if it is on a website that might change down the line, it is a good idea to save a copy of the page in its current format as a pdf).
+
+If there are any gaps in your understanding of how the data was collected and what it contains, this is a good place to discuss what they are.
+
+Make sure to document anything that you're unsure about, so that you don't forget to check and find answers later. Once you find out answers to any questions you had about the data collection or the data documentation, you can also document that here.
+
+### Data dictionary
+
+If you have a data dictionary, print it here or provide a stable link. Discuss anything that you think it is important to point out for future you, or anyone else who might want to work with this data.
+
+## Step 2: Load the data
+
+This section might be as simple as one line of code loading a CSV into your environment, or it may be as complex as:
+
+- Extracting your data from where it lives, such as a database or data repository.
+- Combining multiple data tables using a common key variable.
+- Filtering your data to just the relevant information.
+
+You should check that your data was loaded correctly by
+
+- Looking at the first 10 rows of your data to confirm that it looks correct.
+- Check that the dimension of your data matches what you expect.
+
+```{r load-data}
+#| label: load-data
+ebird <- read_csv("EasternBluebird.csv")
+
+# Quick checks to confirm the file loaded as expected
+head(ebird, 10)
+dim(ebird)
+```
+
+## Step 3: Examine the data
+
+This section documents data patterns relevant to a binary classification task (predicting `y` = 0/1) before applying any cleaning transformations.
+
+### Initial distribution check
+
+```{r initial-distribution-check}
+# Quick class balance check for response y
+table(ebird$y)
+prop.table(table(ebird$y))
+
+# Quick overall summary
+summary(ebird)
+```
+
+### Initial correlation check
+
+```{r initial-correlation-check}
+# Quick correlation matrix for numeric columns
+numeric_data <- ebird %>% select(where(is.numeric))
+round(cor(numeric_data, use = "pairwise.complete.obs"), 2)
+```
+
+### Invalid values
+
+```{r invalid-values}
+# Quick NA count by column (screening check)
+na_count <- sapply(ebird, function(x) sum(is.na(x)))
+na_count
+```
+
+No invalid values were detected in the dataset based on this column-wise check.
+
+### Missing values
+
+```{r missing-values}
+# Treat NA and numeric 0 as missing-like values
+is_missing_like <- function(x) {
+  if (is.numeric(x)) {
+    is.na(x) | x == 0
+  } else {
+    is.na(x)
+  }
+}
+
+# Summarize missing-like values by column
+missing_summary <- tibble(
+  column = names(ebird),
+  missing_count = sapply(ebird, function(x) sum(is_missing_like(x))),
+  missing_percent = round(100 * missing_count / nrow(ebird), 2)
+)
+
+missing_summary %>%
+  arrange(desc(missing_percent)) %>%
+  print(n = 10, width = Inf)
+
+```
+
+```{r missing-values-na-only}
+# Summarize NA-only missing values by column
+missing_summary_na <- tibble(
+  column = names(ebird),
+  missing_count_na = sapply(ebird, function(x) sum(is.na(x))),
+  missing_percent_na = round(100 * missing_count_na / nrow(ebird), 2)
+)
+
+missing_summary_na %>%
+  arrange(desc(missing_percent_na)) %>%
+  print(n = 10, width = Inf)
+```
+
+- If `0` is **not** counted as missing, the dataset is essentially complete with no meaningful `NA` gaps in the variables used here.
+- `LATITUDE` and `LONGITUDE` have full coverage (no `NA` and no zero values), and the zero values seen in `ELEV` are acceptable because elevation can legitimately be 0.
+- The geographic/environmental attributes contain many zeros, but these are expected and interpretable as structural absence of a feature at a location (for example, no nearby deep ocean), not data-quality missingness.
+
+### Data format
+
+Each row represents one eBird search event, and each column represents either site/location information, environmental composition around the site, or the response variable (`y`). This structure is suitable for supervised classification.
+
+#### Latitude/Longitude range checks
+
+```{r lat-lon-range-check}
+lat_lon_check <- tibble(
+  latitude_min = min(ebird$LATITUDE, na.rm = TRUE),
+  latitude_max = max(ebird$LATITUDE, na.rm = TRUE),
+  longitude_min = min(ebird$LONGITUDE, na.rm = TRUE),
+  longitude_max = max(ebird$LONGITUDE, na.rm = TRUE),
+  latitude_out_of_range = sum(ebird$LATITUDE < -90 | ebird$LATITUDE > 90, na.rm = TRUE),
+  longitude_out_of_range = sum(ebird$LONGITUDE < -180 | ebird$LONGITUDE > 180, na.rm = TRUE)
+)
+
+print(lat_lon_check, width = Inf)
+```
+
+```{r lat-lon-map-plot}
+# Build a US + Canada land underlay and use full observed coordinate range
+land_map <- map_data("world") %>%
+  filter(region %in% c("USA", "Canada"))
+
+lon_rng <- range(ebird$LONGITUDE, na.rm = TRUE)
+lat_rng <- range(ebird$LATITUDE, na.rm = TRUE)
+
+ggplot() +
+  geom_polygon(
+    data = land_map,
+    aes(x = long, y = lat, group = group),
+    fill = "#F2EFE6",
+    color = "#B0B0B0",
+    linewidth = 0.2
+  ) +
+  geom_point(
+    data = ebird,
+    aes(x = LONGITUDE, y = LATITUDE, color = factor(y)),
+    alpha = 0.22,
+    size = 0.45
+  ) +
+  coord_quickmap(
+    xlim = lon_rng + c(-0.5, 0.5),
+    ylim = lat_rng + c(-0.5, 0.5),
+    expand = FALSE
+  ) +
+  scale_color_manual(values = c("0" = "#4C78A8", "1" = "#E4572E")) +
+  labs(
+    title = "Eastern Bluebird Search Locations (US + Canada Underlay)",
+    x = "Longitude",
+    y = "Latitude",
+    color = "y"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.background = element_rect(fill = "#DCEFF7", color = NA),
+    panel.grid.major = element_line(color = "#D9D9D9", linewidth = 0.2),
+    panel.grid.minor = element_blank()
+  )
+```
+
+Latitude and longitude values are within valid geographic bounds, with no out-of-range records detected. Latitude spans 35.0 to 50.0 and longitude spans -85.0 to -70.0, indicating a plausible North American study region and no coordinate-cleaning action is needed at this stage.
+
+#### Duplicate values
+
+```{r duplicate-values}
+# Repeated LAT/LONG can be normal, so keep location repeats separate
+if (all(c("LATITUDE", "LONGITUDE") %in% names(ebird))) {
+  duplicate_locations <- ebird %>%
+    count(LATITUDE, LONGITUDE, name = "n") %>%
+    filter(n > 1)
+  duplicate_location_count <- nrow(duplicate_locations)
+} else {
+  duplicate_locations <- tibble()
+  duplicate_location_count <- NA_integer_
+}
+
+# True duplicates: rows that match across every column
+duplicate_rows_all_columns <- sum(duplicated(ebird))
+
+tibble(
+  total_rows = nrow(ebird),
+  duplicate_lat_long_pairs = duplicate_location_count,
+  duplicate_rows_all_columns = duplicate_rows_all_columns
+)
+
+print(duplicate_locations, n = 10)
+```
+
+```{r duplicate-breakdown}
+# Breakdown: duplicate groups vs extra duplicate rows
+
+# LAT/LONG duplicate groups and extra rows
+latlon_groups <- ebird %>%
+  count(LATITUDE, LONGITUDE, name = "n") %>%
+  filter(n > 1)
+
+latlon_breakdown <- tibble(
+  latlon_duplicate_groups = nrow(latlon_groups),
+  latlon_extra_rows = sum(latlon_groups$n - 1)
+)
+
+# Exact row duplicate groups and extra rows
+exact_groups <- ebird %>%
+  count(across(everything()), name = "n") %>%
+  filter(n > 1)
+
+exact_breakdown <- tibble(
+  exact_duplicate_groups = nrow(exact_groups),
+  exact_extra_rows = sum(exact_groups$n - 1)
+)
+
+duplicate_breakdown <- bind_cols(latlon_breakdown, exact_breakdown)
+print(duplicate_breakdown, width = Inf)
+```
+
+These results suggest two different patterns. First, repeated coordinates (`9,296` duplicated `LATITUDE`/`LONGITUDE` pairs) are likely normal because multiple observations can come from the same site. Second, `19,864` exact duplicates across all columns indicate many fully repeated records; these should be checked before modeling to decide whether they are intentional repeats or redundant rows to remove.
+
+#### Duplicate consistency check
+
+```{r duplicate-consistency-check}
+# Check whether exact duplicate predictors have inconsistent y values
+predictor_cols <- setdiff(names(ebird), "y")
+
+duplicate_consistency <- ebird %>%
+  group_by(across(all_of(predictor_cols))) %>%
+  summarize(
+    n_rows = n(),
+    n_unique_y = n_distinct(y),
+    .groups = "drop"
+  ) %>%
+  filter(n_rows > 1)
+
+inconsistent_duplicates <- duplicate_consistency %>%
+  filter(n_unique_y > 1)
+
+duplicate_consistency_summary <- tibble(
+  duplicated_predictor_patterns = nrow(duplicate_consistency),
+  inconsistent_y_patterns = nrow(inconsistent_duplicates)
+)
+
+print(duplicate_consistency_summary, width = Inf)
+
+print(inconsistent_duplicates, n = 10, width = Inf)
+```
+
+The duplicate-consistency check shows `9,444` repeated predictor patterns, and `1,392` of those patterns have inconsistent `y` values. This means most duplicated predictor patterns agree on the outcome, but a meaningful subset maps to both `0` and `1`, suggesting either natural outcome variability at the same predictor values or potential unresolved noise that should be reviewed before modeling.
+
+### Column names
+
+```{r column-names}
+# Check current column names
+name_check <- tibble(
+  column_name = names(ebird),
+  is_lowercase = grepl("^[a-z0-9_]+$", names(ebird)),
+  has_spaces = grepl("\\s", names(ebird))
+)
+
+print(name_check, n = Inf, width = Inf)
+```
+
+Column names are readable and mostly consistent, but many use mixed case (for example, `Shallow_Ocean` and `Urban_Built`). This is documented here for later standardization during cleaning.
+
+### Variable type
+
+```{r data-types-check}
+# Print data types for each column
+data_types <- tibble(
+  column = names(ebird),
+  data_type = sapply(ebird, function(x) class(x)[1])
+)
+
+print(data_types, n = Inf, width = Inf)
+```
+
+All 23 variables are currently stored as `numeric`, which is reasonable for coordinates, elevation, and environmental predictors. Since `y` takes values `0` and `1`, it is a binary response variable for classification.
+
+```{r check-y}
+# Check y values without changing the dataset
+y_values <- sort(unique(ebird$y))
+y_values
+
+# Class counts and imbalance using original 0/1 coding
+y_counts <- count(ebird, y, sort = TRUE)
+print(y_counts, n = Inf)
+
+imbalance_ratio <- y_counts$n[y_counts$y == 0] / y_counts$n[y_counts$y == 1]
+tibble(imbalance_ratio_absent_to_present = round(imbalance_ratio, 2))
+```
+
+The response variable `y` contains binary values (`0` and `1`), consistent with absence/presence classification. The class counts indicate that absences (`0`) are much more frequent than presences (`1`), so the data are class-imbalanced. We only document this here; conversion to factor labels can be performed later in cleaning/modeling steps.
+
+## Step 4: Clean the data
+
+Implement the cleaning tasks that you proposed in the sections above.
+
+Ideally this will involve first writing a re-usable *function* whose arguments correspond to the various judgment calls that you made. This makes it very easy to create several different versions of your data for downstream PCS analysis. You can save your data cleaning function in a separate R script so that you can access it outside this document, but it is a good idea to print the contents of your cleaning R script here too. At the very least, you should summarize the cleaning steps that are implemented in the cleaning script.
+
+You will then typically apply your cleaning function separately to the training, validation, and test data if you are splitting your data as such.
