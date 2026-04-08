@@ -1,0 +1,278 @@
+---
+title: "STSCI4850 HW2"
+output: html_document
+date: ""
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+```
+
+# Load library
+```{r,ECHO = FALSE, include=TRUE}
+library(tidyverse) # Load the tidyverse
+```
+
+# Load the data
+```{r}
+organ_data <- read_csv("global-organ-donation_2018.csv")
+```
+
+
+# Basic review
+
+```{r}
+# number of observation
+nrow(organ_data)
+
+# what does each row mean? OR, what is the unit of inference?
+# Each row represents a country's reported metrics for organ donation for a given year 
+
+# How many variables?
+ncol(organ_data)
+# list the variable names
+colnames(organ_data)
+# How many years
+unique(organ_data$REPORTYEAR)|>
+  length()
+# countries
+unique(organ_data$COUNTRY)|>
+  length()
+# Is it a balanced panel? 
+organ_data|> count(COUNTRY)|>
+  arrange(desc(n))
+# No this is not a balanced panel as not every country has the same number of observations
+```
+
+# keep variables REGION through "Actual DCD"
+
+```{r}
+#meaning of variables
+# REGION: The region of the reported data
+# COUNTRY: The country of the reported data
+# REPORTYEAR: The year of the data data
+# POPULATION: The reported data's country population in millions
+# TOTAL Actual DD: Total number of deceased donors
+# Actual DBD: Actual Donation after a donor's brain death
+# Actual DCD: Actual Donation after donor's circulatory death
+# Total Utilized DD: Donors who donated at least one organ that was transplanted into a recipient
+# Utilized DBD: Brain death donors whose organs were used for transplant
+# Utilized DCD: Circulatory death donors whose organs were used for transplant
+
+#units of measurement
+# Population is in millions 
+# Donors are regular raw counts
+
+#What are the observational units?
+# The observational units are country year units
+
+#messy data
+
+#Invalid or inconsistent values
+na_count <- sapply(organ_data, function(x) sum(is.na(x)))
+na_count
+
+#Improperly formatted missing values
+#Nonstandard data format
+#Messy column names
+#Improper variable types
+#Incomplete data
+
+
+# change names to lowercase and meaningful names
+library(janitor)
+
+organ_data_clean <- organ_data|>
+  clean_names() |>
+  rename(
+    report_year = reportyear,
+    total_deceased_donors = total_actual_dd,
+    brain_dead_donors = actual_dbd,
+    circulatory_death_donors = actual_dcd,
+    utilized_brain_dead_donors = utilized_dbd,
+    utilized_circulatory_death_donors = utilized_dcd,
+    deceased_kidney_donors = dd_kidney_tx,
+    living_kidney_donors = ld_kidney_tx,
+    total_kidney_donors = total_kidney_tx,
+    deceased_liver_donors = dd_liver_tx,
+    living_liver_donors = ld_liver_tx,
+    domino_liver_donors = domino_liver_tx,
+    total_liver_donors = total_liver_tx,
+    deceased_lung_donors = dd_lung_tx,
+    living_lung_donors = ld_lung_tx,
+    total_lung_donors = total_lung_tx,
+    total_heart_donors = total_heart,
+    total_pancreas_donors = pancreas_tx,
+    total_kidney_pancreas_donors = kidney_pancreas_tx,
+    total_small_bowel_donors = small_bowel_tx
+  )
+# why is population in decimals?
+# Population is in decimals to represent the population in millions without having to write out so many digits
+
+# Is total deceased equal to sum of deceased by brain and cardiac death? Comment 
+organ_data_clean |> 
+  mutate(
+    total_brain_circulatory = brain_dead_donors + circulatory_death_donors,
+    difference = total_deceased_donors - total_brain_circulatory
+  ) |>
+  filter(!is.na(total_deceased_donors)) |> 
+  select(country, report_year, total_deceased_donors, total_brain_circulatory, difference) |>
+  head(10)
+
+# There is a discrepancy between the noted total and the of brain and circulatory calculated sum. This exists because a lot of the countries report the total number of deceased donors but are unable to or don't note the sub categories of brain dead or circulatory death donors. Some countries' healthcare systems might have different definitions for death that don't fit the classifications of DBD or DCD. The column that notes the total deceased donors would be the most reliable metric.
+
+```
+
+# Reproduce fig 4.2
+
+```{r}
+
+organ_data_clean |>
+  filter(!is.na(total_deceased_donors)) |>
+  group_by(report_year) |>
+  summarise(
+    count = n()
+  ) |>
+  ggplot(aes( x = report_year, y = count)) +
+  geom_col() +
+  labs(
+    x = "Year",
+    y = "Nonmissing TOTAL Actual DD values",
+    title = "Reproduction of Figure 4.2"
+  ) 
+```
+
+# Reproduce fig 4.3
+
+```{r}
+
+organ_data_clean |>
+  group_by(report_year) |>
+  summarise(total = n()) |>
+  ggplot(aes( x = report_year, y = total)) +
+  geom_col() +
+  labs(
+    x = "Year",
+    y = "Number of rows",
+    title = "Reproduction of Figure 4.3"
+  ) 
+
+```
+
+
+# Reproduce fig 5.2 
+
+```{r}
+source("imputeFeature.R")
+
+# Complete the data so that balanced panel: 
+
+organ_balanced_data <- organ_data_clean |>
+  complete(country, report_year)
+
+# Use "average" for imputation
+
+organ_data_imputed <- organ_balanced_data |>
+  mutate(total_deceased_donor_imputed = imputeFeature(
+    .data = pick(everything()),
+    .feature = total_deceased_donors, 
+    .group = country, 
+    .impute_method = "average"
+  ),
+  population_imputed = imputeFeature(
+    .data = pick(everything()),
+    .feature = total_deceased_donors, 
+    .group = country, 
+    .impute_method = "average"
+  )) 
+
+organ_data_imputed |>
+  group_by(report_year) |>
+  summarise(global_total = sum(total_deceased_donor_imputed, na.rm = TRUE)) |>
+  ggplot(aes(x = report_year, y = global_total)) +
+  geom_line() +
+  labs(
+    x = "Year",
+    y = "(imputed) Global number of organ donors",
+    title = "Reproduction of Figure 5.2"
+  )
+```
+
+
+# Reproduce fig 5.7 
+
+```{r}
+organ_data_2017 <- organ_data_imputed |>
+  filter(report_year == 2017) |>
+  mutate(total_deceased_donors_per_mil = total_deceased_donor_imputed / (population_imputed + 1) * 1000000)
+
+organ_data_2017 |>
+  ggplot(aes(x = total_deceased_donors_per_mil)) +
+  geom_histogram(
+    binwidth = 1,
+    boundary = 0) +
+  labs(
+    x = "(Imputed) organ donors per million in 2017",
+    y = "Number of countries",
+    title = "Reproduction of Figure 5.7"
+  )
+
+```
+
+
+# Investigate imputation
+
+```{r}
+# Create a figure comparable to fig 5.2 using raw data i.e., without imputation. Note this means you have to remove missing values
+
+
+# Why does donor count drops sharply after 2014 in raw data? 
+
+
+# with imputation data
+# print the total (across all countries) raw and imputed deceased total count for China
+# print the raw and imputed deceased total count for Peru
+# print the raw and imputed deceased total count for China
+# comment on the imputation method used - would you suggest any changes
+
+
+```
+
+# Reproduce Table 1
+# Fig 5.2 or Table 5.1 Which is a better representation? comment
+
+```{r}
+
+  # # note that we use `population_imputed + 1` in the denominator because there 
+  # # are some countries with a reported population of 0.
+  # mutate(total_deceased_donors_per_mil = total_deceased_donors / (population_imputed + 1) * 1000000,
+  #        total_deceased_donors_imputed_per_mil = total_deceased_donors_imputed / (population_imputed + 1) * 1000000) 
+
+organ_data_clean |>
+  mutate(total_deceased_donors_per_mil = total_deceased_donors / (population_imputed + 1) * 1000000,
+         total_deceased_donors_imputed_per_mil = total_deceased_donors_imputed / (population_imputed + 1) * 1000000) 
+  group_by(report_year) |>
+  summarise(raw_global_total = sum(total_deceased_donors, na.rm = TRUE)) |>
+  ggplot(aes(x = report_year, y = raw_global_total)) +
+  geom_line() +
+  labs(
+    x = "Year",
+    y = "Global number of organ donors (Raw)",
+    title = "Raw Data Worldwide Organ Donor Trends"
+  )
+
+```
+
+
+# Reproduce Fig 5.6 and comment
+```{r}
+
+```
+
+
+# Which countries showed the highest growth rate in donor rates? Comment
+
+```{r}
+
+```
