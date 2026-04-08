@@ -205,13 +205,12 @@ organ_data_imputed |>
 ```{r}
 organ_data_2017 <- organ_data_imputed |>
   filter(report_year == 2017) |>
-  mutate(total_deceased_donors_per_mil = total_deceased_donor_imputed / (population_imputed + 1) * 1000000)
+  mutate(total_deceased_donors_per_mil = total_deceased_donor_imputed / (population + 1) * 1000000000,
+         total_deceased_donors_per_mil = replace_na(total_deceased_donors_per_mil, 0))
 
 organ_data_2017 |>
   ggplot(aes(x = total_deceased_donors_per_mil)) +
-  geom_histogram(
-    binwidth = 1,
-    boundary = 0) +
+  geom_histogram() +
   labs(
     x = "(Imputed) organ donors per million in 2017",
     y = "Number of countries",
@@ -233,9 +232,36 @@ organ_data_2017 |>
 # with imputation data
 # print the total (across all countries) raw and imputed deceased total count for China
 # print the raw and imputed deceased total count for Peru
+organ_data_imputed |> 
+  filter(country == "Peru") |> 
+  summarise(
+    raw_total_china = sum(total_deceased_donors, na.rm = TRUE), 
+    imputed_total_china = sum(total_deceased_donor_imputed)
+  )
+
 # print the raw and imputed deceased total count for China
+
+organ_data_imputed |> 
+  filter(country == "China") |> 
+  summarise(
+    raw_total_china = sum(total_deceased_donors, na.rm = TRUE), 
+    imputed_total_china = sum(total_deceased_donor_imputed)
+  )
+
 # comment on the imputation method used - would you suggest any changes
 
+#The donor count sharply drops in raw data counts after 2014 is probably because of a lag or slow down in reporting. Data may not have been verified or submitted to the database yet. The imputation method fills the gaps using an average of the country's prior stats. This smooths the trend line and removes cliffs such as the one that occured in the raw data. This is a good approach for missing data for missing years, but it fails to completely acknowledge with edge cases at the start or end of the data timeline that has no future data to average with. Including regional growth rates or regression models that show development trajectories for different countries instead of just using the last known statistic could improve accuracy.
+
+organ_data_clean |>
+  group_by(report_year) |>
+  summarise(raw_global_total = sum(total_deceased_donors, na.rm = TRUE)) |>
+  ggplot(aes(x = report_year, y = raw_global_total)) +
+  geom_line() +
+  labs(
+    x = "Year",
+    y = "Global number of organ donors (Raw)",
+    title = "Raw Data Worldwide Organ Donor Trends"
+  )
 
 ```
 
@@ -249,24 +275,30 @@ organ_data_2017 |>
   # mutate(total_deceased_donors_per_mil = total_deceased_donors / (population_imputed + 1) * 1000000,
   #        total_deceased_donors_imputed_per_mil = total_deceased_donors_imputed / (population_imputed + 1) * 1000000) 
 
-organ_data_clean |>
-  mutate(total_deceased_donors_per_mil = total_deceased_donors / (population_imputed + 1) * 1000000,
-         total_deceased_donors_imputed_per_mil = total_deceased_donors_imputed / (population_imputed + 1) * 1000000) 
-  group_by(report_year) |>
-  summarise(raw_global_total = sum(total_deceased_donors, na.rm = TRUE)) |>
-  ggplot(aes(x = report_year, y = raw_global_total)) +
-  geom_line() +
-  labs(
-    x = "Year",
-    y = "Global number of organ donors (Raw)",
-    title = "Raw Data Worldwide Organ Donor Trends"
-  )
 
 ```
-
+The graph reproducing figure 5.2 is a better representation as it gives a visual comparison between the raw lagged reporting data and how imputation is able to piece together the global trend. A table can give numbers that seem more precise, but the line graph more clearly shows the data, showing the decline after 2014 (which is artificial) more obvious see. Ultimately, the visualization highlights a constant and steady increase organ donation globally that could easily be overlooked in a tabular format.
 
 # Reproduce Fig 5.6 and comment
 ```{r}
+
+top_15 <- organ_data_imputed |>
+  ungroup() |>
+  filter(report_year == 2017) |>
+  mutate(rate = total_deceased_donor_imputed / (population_imputed + 1)) |>
+  slice_max(rate, n = 15) |>
+  pull(country)
+
+top_15_data <- organ_data_imputed |>
+  filter(country %in% top_15) |>
+  mutate(rate = total_deceased_donor_imputed / (population_imputed + 1))
+
+ggplot(top_15_data, aes(x = report_year, y = rate)) +
+  geom_line() +
+  facet_wrap(~country) +
+  ggtitle("Number of organ donations per million from 2000 to 2017",
+          subtitle = "For the top 20 countries in 2017")
+
 
 ```
 
