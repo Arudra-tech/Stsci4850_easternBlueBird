@@ -1,0 +1,314 @@
+---
+title: "NHANES Hypertension"
+output: pdf
+date: ""
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## replicate the sample size in https://www.cdc.gov/nchs/data/databriefs/db519.pdf
+
+
+# Load library
+```{r,ECHO = FALSE, include=TRUE}
+rm(list=ls())
+
+library(tidyverse) # Load the tidyverse
+library(survey)
+
+```
+
+#Replicate Figure 1, Table 1
+Sample size is unweighted. Estimates are weighted using fasting sample weights. Estimates for diagnosed diabetes are based on responses to the
+survey question, “Other than during pregnancy, have you ever been told by a doctor or health professional that you have diabetes or sugar diabetes?” Estimates
+for undiagnosed diabetes are based on an 8- to 24-hour fasting plasma glucose greater than or equal to 126 mg/dL or hemoglobin A1c greater than or equal to
+6.5% in a participant who reported never receiving a diabetes diagnosis from a healthcare provider. Age-adjusted estimates for adults age 20 and older were age
+adjusted by the direct method to the U.S. Census 2000 population using age groups 20–39, 40–59, and 60 and older
+
+all data from: https://wwwn.cdc.gov/nchs/nhanes/default.aspx
+2021-2023
+
+# Load the data
+```{r}
+demo <- haven::read_xpt("DEMO_L.xpt")
+bpxo <- haven::read_xpt("BPXO_L.xpt")
+bpq  <- haven::read_xpt("BPQ_L.xpt")
+ 
+df1 <- demo %>%
+  select(SEQN, RIAGENDR, RIDAGEYR, RIDEXPRG, RIDRETH3,
+         WTMEC2YR,   # ← MEC exam weight for the 2021-2023 cycle
+         SDMVSTRA, SDMVPSU) %>%
+  rename(gender = RIAGENDR,
+         age    = RIDAGEYR,
+         preg   = RIDEXPRG,
+         race   = RIDRETH3,
+         weight = WTMEC2YR)  # renamed for convenience
+ 
+df2 <- bpxo %>%
+  select(SEQN,
+         BPXOSY1, BPXOSY2, BPXOSY3,
+         BPXODI1, BPXODI2, BPXODI3)
+ 
+df3 <- bpq %>%
+  select(SEQN,
+         BPQ020,   # Ever told you had high blood pressure
+         BPQ150)   # Currently taking high blood pressure medication
+         # NOTE: BPQ150 in the L (2021-2023) cycle corresponds to "Are you now
+         # taking any medication prescribed by a doctor for your high BP?"
+         # In earlier cycles this was BPQ040A — verify against your codebook.
+ 
+tmp <- df1 %>%
+  merge(df2, by = "SEQN") %>%
+  merge(df3, by = "SEQN")
+
+
+```
+We load the data and merge each important variable with their ...
+
+
+
+```{r}
+# ── Before cleaning, understand what you have ─────────────────────────────
+df <- tmp %>%
+ 
+  # -- Restrict to adults 18+ ------------------------------------------------
+  filter(age >= 18) %>%
+ 
+  # -- Keep only MEC-examined participants ------------------------------------
+  #    weight == 0 means they did not attend the mobile exam center
+  filter(weight > 0) %>%
+ 
+  # -- Exclude pregnant women (per CDC methods) --------------------------------
+  filter(is.na(preg) | preg != 1) %>%
+
+  # -- Recode refused/don't know to NA ----------------------------------------
+  #    NHANES codes: 7 = Refused, 9 = Don't know
+  mutate(
+    BPQ020 = if_else(BPQ020 %in% c(7, 9), NA_real_, BPQ020),
+    BPQ150 = if_else(BPQ150 %in% c(7, 9), NA_real_, BPQ150)
+  ) %>%
+ 
+  # -- Average SBP and DBP across readings 2 and 3 ----------------------------
+  #    Reading 1 is a practice read per NHANES protocol and is excluded.
+  #    CDC uses "average of up to three" — they include reading 1 only when
+  #    readings 2 and 3 are both missing. Replicate with rowMeans(na.rm=TRUE)
+  #    applied only to readings 2 and 3 to match the standard approach.
+  mutate(
+    sbp = rowMeans(cbind(BPXOSY2, BPXOSY3), na.rm = TRUE),
+    dbp = rowMeans(cbind(BPXODI2, BPXODI3), na.rm = TRUE)
+  ) %>%
+   filter(!is.nan(sbp) & !is.nan(dbp)) %>%
+  # -- On medication flag (used to define hypertension) -----------------------
+  #    BPQ150: 1 = Yes, 2 = No, NA = not asked (never diagnosed → not on meds)
+  mutate(
+    on_meds = case_when(
+      BPQ150 == 1           ~ 1,
+      BPQ150 == 2           ~ 0,
+      is.na(BPQ150)         ~ 0,   # question not asked → not on medication
+      TRUE                  ~ 0
+    )
+  ) %>%
+ 
+  # -- OUTCOME 1: Hypertension ------------------------------------------------
+  #    SBP >= 130 OR DBP >= 80 OR currently taking BP medication
+  mutate(
+    hypertension = if_else(sbp >= 130 | dbp >= 80 | on_meds == 1, 1, 0)
+  ) %>%
+ 
+  # -- OUTCOME 2: Awareness ---------------------------------------------------
+  #    DENOMINATOR: adults WITH hypertension
+  #    DEFINITION: ever told by a doctor (BPQ020 == 1)
+  mutate(
+    aware = case_when(
+      hypertension == 1 & BPQ020 == 1 ~ 1,
+      hypertension == 1 & BPQ020 == 2 ~ 0,
+      TRUE ~ NA_real_          # not hypertensive → exclude
+    )
+  ) %>%
+ 
+  # -- OUTCOME 3: Treatment ---------------------------------------------------
+  #    DENOMINATOR: adults WITH hypertension   ← KEY FIX vs. your original code
+  #    DEFINITION: currently taking prescribed BP medication
+  #    NOTE: Anyone on_meds == 1 is already hypertensive by definition above,
+  #    so treated == 1 is a subset of hypertension == 1.
+  mutate(
+    treated = case_when(
+      hypertension == 1 & on_meds == 1 ~ 1,
+      hypertension == 1 & on_meds == 0 ~ 0,
+      TRUE ~ NA_real_          # not hypertensive → exclude
+    )
+  ) %>%
+ 
+  # -- OUTCOME 4: Control -----------------------------------------------------
+  #    DENOMINATOR: adults WITH hypertension   ← KEY FIX vs. your original code
+  #    (CDC Table 4 sample sizes match Table 1 hypertensive counts, NOT
+  #     treatment counts. Control is NOT restricted to treated individuals.)
+  #    DEFINITION: SBP < 130 AND DBP < 80
+  mutate(
+    controlled = case_when(
+      hypertension == 1 & (sbp < 130 & dbp < 80)   ~ 1,
+      hypertension == 1 & (sbp >= 130 | dbp >= 80) ~ 0,
+      TRUE ~ NA_real_          # not hypertensive → exclude
+    )
+  ) %>%
+ 
+  # -- Age groups -------------------------------------------------------------
+  mutate(
+    agegroup = case_when(
+      age >= 18 & age <= 39 ~ "18-39",
+      age >= 40 & age <= 59 ~ "40-59",
+      age >= 60             ~ "60+",
+      TRUE ~ NA_character_
+    ),
+    agegroup = factor(agegroup, levels = c("18-39", "40-59", "60+"))
+  ) %>%
+ 
+  # -- Sex label --------------------------------------------------------------
+  mutate(
+    sex = factor(if_else(gender == 1, "Male", "Female"),
+                 levels = c("Male", "Female"))
+  ) %>%
+ 
+  # -- Race/ethnicity ---------------------------------------------------------
+  mutate(
+    race_eth = case_when(
+      race == 1 ~ "Mexican American",
+      race == 2 ~ "Other Hispanic",
+      race == 3 ~ "Non-Hispanic White",
+      race == 4 ~ "Non-Hispanic Black",
+      race == 6 ~ "Non-Hispanic Asian",
+      race == 7 ~ "Other/Multiracial",
+      TRUE ~ NA_character_
+    ),
+    race_eth = factor(race_eth)
+  )
+ 
+# -- Sanity check: should be a descending funnel ------------------------------
+df %>%
+  summarise(
+    n_total        = n(),
+    n_hypertension = sum(hypertension == 1,   na.rm = TRUE),
+    n_aware        = sum(aware == 1,           na.rm = TRUE),
+    n_treated      = sum(treated == 1,         na.rm = TRUE),
+    n_controlled   = sum(controlled == 1,      na.rm = TRUE)
+  )
+# Expected (unweighted): ~6084 total, ~3242 hypertensive
+# Weighted estimates should approximate: 47.7% / 59.2% / 51.2% / 20.7%
+```
+
+```{r}
+
+  # -- OUTCOME 1: Hypertension ------------------------------------------------
+  #    SBP >= 130 OR DBP >= 80 OR currently taking BP medication
+  df %>%
+  
+  mutate(
+    hypertension = if_else(sbp >= 130 | dbp >= 80 | on_meds == 1, 1, 0)
+  ) %>%
+ 
+  # -- OUTCOME 2: Awareness ---------------------------------------------------
+  #    DENOMINATOR: adults WITH hypertension
+  #    DEFINITION: ever told by a doctor (BPQ020 == 1)
+  mutate(
+    aware = case_when(
+      hypertension == 1 & BPQ020 == 1 ~ 1,
+      hypertension == 1 & BPQ020 == 2 ~ 0,
+      TRUE ~ NA_real_          # not hypertensive → exclude
+    )
+  ) %>%
+ 
+  # -- OUTCOME 3: Treatment ---------------------------------------------------
+  #    DENOMINATOR: adults WITH hypertension
+  #    DEFINITION: currently taking prescribed BP medication
+  #    NOTE: Anyone on_meds == 1 is already hypertensive by definition above,
+  #    so treated == 1 is a subset of hypertension == 1.
+  mutate(
+    treated = case_when(
+      hypertension == 1 & on_meds == 1 ~ 1,
+      hypertension == 1 & on_meds == 0 ~ 0,
+      TRUE ~ NA_real_          # not hypertensive → exclude
+    )
+  ) %>%
+ 
+  # -- OUTCOME 4: Control -----------------------------------------------------
+  #    DENOMINATOR: adults WITH hypertension
+  #    (CDC Table 4 sample sizes match Table 1 hypertensive counts, NOT
+  #     treatment counts. Control is NOT restricted to treated individuals.)
+  #    DEFINITION: SBP < 130 AND DBP < 80
+  mutate(
+    controlled = case_when(
+      hypertension == 1 & (sbp < 130 & dbp < 80)   ~ 1,
+      hypertension == 1 & (sbp >= 130 | dbp >= 80) ~ 0,
+      TRUE ~ NA_real_          # not hypertensive → exclude
+    )
+  ) %>%
+ 
+  # -- Age groups -------------------------------------------------------------
+  mutate(
+    agegroup = case_when(
+      age >= 18 & age <= 39 ~ "18-39",
+      age >= 40 & age <= 59 ~ "40-59",
+      age >= 60             ~ "60+",
+      TRUE ~ NA_character_
+    ),
+    agegroup = factor(agegroup, levels = c("18-39", "40-59", "60+"))
+  ) %>%
+ 
+  # -- Sex label --------------------------------------------------------------
+  mutate(
+    sex = factor(if_else(gender == 1, "Male", "Female"),
+                 levels = c("Male", "Female"))
+  ) %>%
+ 
+  # -- Race/ethnicity ---------------------------------------------------------
+  mutate(
+    race_eth = case_when(
+      race == 1 ~ "Mexican American",
+      race == 2 ~ "Other Hispanic",
+      race == 3 ~ "Non-Hispanic White",
+      race == 4 ~ "Non-Hispanic Black",
+      race == 6 ~ "Non-Hispanic Asian",
+      race == 7 ~ "Other/Multiracial",
+      TRUE ~ NA_character_
+    ),
+    race_eth = factor(race_eth)
+  )
+ 
+```
+BPQ020 - Ever told you had high blood pressure
+BPQ030 - Told had high blood pressure - 2+ times
+BPQ150 - Taking high blood pressure medication
+BPQ080 - Doctor told you - high cholesterol level
+BPQ101D - Taking meds to lower blood cholesterol?
+
+
+
+```{r}
+
+# -- Sanity check: should be a descending funnel ------------------------------
+df %>%
+  summarise(
+    n_total        = n(),
+    n_hypertension = sum(hypertension == 1,   na.rm = TRUE),
+    n_aware        = sum(aware == 1,           na.rm = TRUE),
+    n_treated      = sum(treated == 1,         na.rm = TRUE),
+    n_controlled   = sum(controlled == 1,      na.rm = TRUE)
+  )
+# Expected (unweighted): ~6084 total, ~3242 hypertensive
+# Weighted estimates should approximate: 47.7% / 59.2% / 51.2% / 20.7%
+
+
+
+# Instead of this (manual):
+est  <- svymean(~hypertension, svy, na.rm = TRUE)
+pct  <- coef(est) * 100
+se   <- SE(est)   * 100
+ci_l <- pct - 1.96 * se
+ci_u <- pct + 1.96 * se
+
+# You can do this (automatic):
+result <- svyby(~hypertension, ~sex, svy, svymean, na.rm = TRUE, vartype = c("se", "ci"))
+
+
+```
